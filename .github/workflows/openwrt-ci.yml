@@ -1,109 +1,157 @@
-# 
-# <https://github.com/KFERMercer/OpenWrt-CI>
-#
-# Copyright (C) 2019 P3TERX
-#
-# Copyright (C) 2020 KFERMercer
-#
-name: OpenWrt-CI
+name: openmptcprouter
+on: [push]
 
-on:
-  schedule:
-    - cron: 0 20 * * *
-  release:
-    types: [published]
-    - master
+env:
+  REPO_URL: 'https://github.com/ysurac/openmptcprouter'
+
 jobs:
-
-  build_openwrt:
-
-    name: Build OpenWrt firmware
-
+  build:
+    strategy:
+      matrix:
+        OMR_TARGET: [bpi-r1, bpi-r2, bpi-r64, rpi2, rpi4, wrt32x, espressobin, r2s, rpi3, wrt3200acm, x86, x86_64, ubnt-erx, r4s, r7800, rutx]
+        OMR_KERNEL: [5.4, 5.15]
     runs-on: ubuntu-latest
-
-    if: github.event.repository.owner.id == github.event.sender.id
+    continue-on-error: true
 
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          ref: master
-
-      - name: Space cleanup
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          docker rmi `docker images -q`
-          sudo rm -rf /usr/share/dotnet /etc/mysql /etc/php /etc/apt/sources.list.d /usr/local/lib/android
-          sudo -E apt-get -y purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* adoptopenjdk* mysql* php* mongodb* dotnet* moby* snapd* || true
-          sudo -E apt-get update
-          sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler antlr3 gperf swig
-          sudo -E apt-get -y autoremove --purge
-          sudo -E apt-get clean
-
-          df -h
-
-      - name: Update feeds
-        run: |
-          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-
-      - name: Generate configuration file
-        run: make defconfig
-
-      - name: Make download
-        run: |
-          make download -j8
-          find dl -size -1024c -exec rm -f {} \;
-
-      - name: Compile firmware
-        run: |
-          make -j$(nproc) || make -j1 V=s
-          echo "======================="
-          echo "Space usage:"
-          echo "======================="
-          df -h
-          echo "======================="
-          du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
-          du -h --max-depth=1 ./build_dir
-          du -h --max-depth=1 ./bin
-
-      - name: Prepare artifact
-        run: |
-          mkdir -p ./artifact/firmware
-          mkdir -p ./artifact/package
-          mkdir -p ./artifact/buildinfo
-          rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/targets/ -type f) ./artifact/firmware/
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
-          cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
-
-      - name: Deliver buildinfo
-        uses: actions/upload-artifact@v2
-        with:
-          name: OpenWrt_buildinfo
-          path: ./artifact/buildinfo/
-
-      - name: Deliver package
-        uses: actions/upload-artifact@v2
-        with:
-          name: OpenWrt_package
-          path: ./artifact/package/
-
-      - name: Deliver firmware
-        uses: actions/upload-artifact@v2
-        with:
-          name: OpenWrt_firmware
-          path: ./bin/targets/
-  
-
-      - name: Upload release asset
-        if: github.event == 'release'
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.YOURTOKEN }}
-          file: ./artifact/firmware/*
-          tag: ${{ github.ref }}
-          file_glob: true
+    - name: Branch name
+      id: branch_name
+      run: |
+        echo ::set-output name=SOURCE_NAME::${GITHUB_REF#refs/*/}
+        echo ::set-output name=SOURCE_BRANCH::${GITHUB_REF#refs/heads/}
+        echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
+        echo ::set-output name=WORKSPACE::${GITHUB_WORKSPACE}
+    - name: Prepare
+      run: |
+        sudo apt-get update
+        sudo apt-get install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler
+    - name: Free disk space
+      run: |
+        df -h
+        sudo swapoff -a >/dev/null 2>&1 || true
+        sudo rm -f /swapfile >/dev/null 2>&1 || true
+        sudo apt-get autoremove -y >/dev/null 2>&1 || true
+        sudo apt-get autoclean -y >/dev/null 2>&1 || true
+        sudo rm -rf "/usr/local/share/boost" >/dev/null 2>&1 || true
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY" >/dev/null 2>&1 || true
+        sudo docker rmi $(docker images -qf "dangling=true") >/dev/null 2>&1 || true
+        df -h
+    - name: Clone source code
+      working-directory: ../../
+      env: 
+        REPO_URL: https://github.com/ysurac/openmptcprouter
+        SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+        GITHUB_WORKSPACE: ${{ steps.branch_name.outputs.WORKSPACE }}
+      run: |
+        git clone $REPO_URL omr
+        if [ "$SOURCE_NAME" != "develop" ]; then
+          cd omr
+          pwd
+          git fetch
+          git checkout master
+        else
+          cd omr
+          git checkout develop
+        fi
+        git pull
+        pwd
+    - name: Build toolchain
+      working-directory: ../../omr
+      env:
+        OMR_FEED_URL: https://github.com/ysurac/openmptcprouter-feeds
+        SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+        OMR_TARGET: ${{ matrix.OMR_TARGET }}
+        OMR_KERNEL: ${{ matrix.OMR_KERNEL }}
+        OMR_HOST: ${{ secrets.OMR_HOST }}
+        OMR_PORT: ${{ secrets.OMR_PORT }}
+      run: |
+        OMR_KERNEL="${OMR_KERNEL}" OMR_FEED_SRC="${SOURCE_NAME}" sh build.sh prepare {tools,toolchain}/install -j$(nproc) || OMR_KERNEL="${OMR_KERNEL}" OMR_FEED_SRC="${SOURCE_NAME}" sh build.sh prepare {tools,toolchain}/install -j1 V=s
+        #echo -e "${{ secrets.OMR_PRIVKEY }}" > $OMR_TARGET/$OMR_KERNEL/source/key-build
+        #echo -e "${{ secrets.OMR_PUBKEY }}" > $OMR_TARGET/$OMR_KERNEL/source/key-build.pub
+    - name: Build packages
+      working-directory: ../../omr
+      env:
+        OMR_TARGET: ${{ matrix.OMR_TARGET }}
+        OMR_KERNEL: ${{ matrix.OMR_KERNEL }}
+      run: |
+        make IGNORE_ERRORS=m -C $OMR_TARGET/$OMR_KERNEL/source package/{compile,install,index} -j$(nproc) || make IGNORE_ERRORS=m -C $OMR_TARGET/$OMR_KERNEL/source package/{compile,install,index} -j1 V=s
+    - name: Build image
+      working-directory: ../../omr
+      env:
+        OMR_TARGET: ${{ matrix.OMR_TARGET }}
+        OMR_KERNEL: ${{ matrix.OMR_KERNEL }}
+      run: |
+        make IGNORE_ERRORS=m -C $OMR_TARGET/$OMR_KERNEL/source target/install -j$(nproc) || make IGNORE_ERRORS=m -C $OMR_TARGET/$OMR_KERNEL/source target/install -j1 V=s
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ matrix.OMR_TARGET }}
+        path: /home/runner/work/omr/${{ matrix.OMR_TARGET }}/${{ matrix.OMR_KERNEL }}/source/bin
+    - if: steps.branch_name.outputs.SOURCE_BRANCH == ''
+      name: Deploy - Create directory
+      uses: ysurac/ssh-action@master
+      env:
+          SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+          SOURCE_BRANCH: ${{ steps.branch_name.outputs.SOURCE_BRANCH }}
+          SOURCE_TAG: ${{ steps.branch_name.outputs.SOURCE_TAG }}
+      with:
+        command: |
+          mkdir -p deploy/release/${{env.SOURCE_TAG}}/${{matrix.OMR_TARGET}}
+        host: ${{ secrets.OMR_DEPLOY_HOST }}
+        user: deploy
+        port: ${{ secrets.OMR_DEPLOY_PORT }}
+        key: ${{ secrets.PRIVATE_KEY }}
+        args: -tt
+    - if: steps.branch_name.outputs.SOURCE_BRANCH != ''
+      name: Deploy - Create directory
+      uses: ysurac/ssh-action@master
+      env:
+          SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+          SOURCE_BRANCH: ${{ steps.branch_name.outputs.SOURCE_BRANCH }}
+          SOURCE_TAG: ${{ steps.branch_name.outputs.SOURCE_TAG }}
+      with:
+        command: |
+          mkdir -p deploy/${{env.SOURCE_BRANCH}}/${{matrix.OMR_KERNEL}}/${{matrix.OMR_TARGET}}
+        host: ${{ secrets.OMR_DEPLOY_HOST }}
+        user: deploy
+        port: ${{ secrets.OMR_DEPLOY_PORT }}
+        key: ${{ secrets.PRIVATE_KEY }}
+        args: -tt
+    - name: Move binaries for rsync
+      working-directory: ../../omr
+      env:
+        OMR_TARGET: ${{ matrix.OMR_TARGET }}
+        OMR_KERNEL: ${{ matrix.OMR_KERNEL }}
+        GITHUB_WORKSPACE: ${{ steps.branch_name.outputs.WORKSPACE }}
+      run: |
+        mv ${OMR_TARGET}/${OMR_KERNEL}/source/bin ${GITHUB_WORKSPACE}/
+    - if: steps.branch_name.outputs.SOURCE_BRANCH == ''
+      name: Deploy - Upload via rsync
+      uses: ysurac/action-rsync@master
+      env:
+        ARGS: -av --delete-after
+        TARGET: deploy/release/${{steps.branch_name.outputs.SOURCE_TAG}}/${{matrix.OMR_TARGET}}
+        SOURCE: ./bin/
+        KEY: ${{ secrets.PRIVATE_KEY }}
+        USER: deploy
+        HOST: ${{ secrets.OMR_DEPLOY_HOST }}
+        PORT: ${{ secrets.OMR_DEPLOY_PORT }}
+        SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+        SOURCE_BRANCH: ${{ steps.branch_name.outputs.SOURCE_BRANCH }}
+        SOURCE_TAG: ${{ steps.branch_name.outputs.SOURCE_TAG }}
+        GITHUB_WORKSPACE: ${{ steps.branch_name.outputs.WORKSPACE }}
+    - if: steps.branch_name.outputs.SOURCE_BRANCH != ''
+      name: Deploy - Upload via rsync
+      uses: ysurac/action-rsync@master
+      env:
+        ARGS: -av --delete-after
+        TARGET: deploy/${{ steps.branch_name.outputs.SOURCE_BRANCH }}/${{matrix.OMR_KERNEL}}/${{matrix.OMR_TARGET}}
+        SOURCE: ./bin/
+        KEY: ${{ secrets.PRIVATE_KEY }}
+        USER: deploy
+        HOST: ${{ secrets.OMR_DEPLOY_HOST }}
+        PORT: ${{ secrets.OMR_DEPLOY_PORT }}
+        SOURCE_NAME: ${{ steps.branch_name.outputs.SOURCE_NAME }}
+        SOURCE_BRANCH: ${{ steps.branch_name.outputs.SOURCE_BRANCH }}
+        SOURCE_TAG: ${{ steps.branch_name.outputs.SOURCE_TAG }}
+        GITHUB_WORKSPACE: ${{ steps.branch_name.outputs.WORKSPACE }}
